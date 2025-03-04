@@ -1,35 +1,48 @@
+import cv2
+import numpy as np
 from PIL import Image, ImageFilter
 import svgwrite
 
-def create_vector_outline(image_path, output_path):
-    # Open the image
-    image = Image.open(image_path).convert("L")  # Convert to grayscale
-    image = image.filter(ImageFilter.FIND_EDGES)  # Find edges
+def create_vector_outline(image_path, output_path, epsilon_factor=0.002):
+    # Load image and convert to grayscale
+    image = Image.open(image_path).convert("L")
+    image = image.filter(ImageFilter.FIND_EDGES)
 
-    # Create a new SVG drawing
-    dwg = svgwrite.Drawing(output_path, profile='tiny')
+    # Convert PIL image to numpy array
+    img_array = np.array(image)
+
+    # Apply Gaussian blur to smooth edges
+    img_array = cv2.GaussianBlur(img_array, (5, 5), 0)
+
+    # Detect edges using Canny
+    edges = cv2.Canny(img_array, 50, 150)
+
+    # Find contours with full resolution
+    contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
 
     # Get image dimensions
     width, height = image.size
 
-    # Add image dimensions to SVG
-    dwg.add(dwg.rect(insert=(0, 0), size=(width, height), fill='white'))
+    # Create SVG file
+    dwg = svgwrite.Drawing(output_path, profile='tiny')
 
-    # Convert image to SVG path
-    for y in range(height):
-        for x in range(width):
-            pixel = image.getpixel((x, y))
-            if pixel < 128:  # Threshold value to determine edge
-                dwg.add(dwg.circle(center=(x, y), r=0.5, fill='black'))
+    for contour in contours:
+        # Simplify contour using Douglas-Peucker
+        epsilon = epsilon_factor * cv2.arcLength(contour, True)
+        smooth_contour = cv2.approxPolyDP(contour, epsilon, True)
 
-    # Save the SVG file
+        # Convert points to SVG path format
+        points = [(int(pt[0][0]), int(pt[0][1])) for pt in smooth_contour]
+        if len(points) > 1:
+            path_data = "M " + " L ".join(f"{x},{y}" for x, y in points) + " Z"
+            dwg.add(dwg.path(d=path_data, fill="none", stroke="black", stroke_width="1"))
+
+    # Save SVG file
     dwg.save()
+    print(f"Vector outline saved to {output_path}")
 
 if __name__ == "__main__":
-    # Paths to the input image and output SVG file
-    input_image_path = 'img/CMYK_sample.png'
-    output_svg_path = 'img/CMYK_sample_outline.svg'
+    input_image_path = 'img/outlineImg.png'
+    output_svg_path = 'img/outlineImg_outline.svg'
 
-    # Create the vector outline
-    create_vector_outline(input_image_path, output_svg_path)
-    print(f"Vector outline saved to {output_svg_path}")
+    create_vector_outline(input_image_path, output_svg_path,0.00001)
