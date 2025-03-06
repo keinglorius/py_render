@@ -1,125 +1,175 @@
-import numpy as np
+import os
 import cv2
-from PIL import Image
-from svgpathtools import Path, QuadraticBezier
 import subprocess
-from svgpathtools import Path, QuadraticBezier
+import numpy as np
+from skimage.morphology import skeletonize
+import networkx as nx
+import matplotlib.pyplot as plt
+from scipy.interpolate import splprep, splev
+import matplotlib.patches as patches
+from scipy.spatial import Delaunay
+from matplotlib.patches import PathPatch
+from matplotlib.path import Path
+from PIL import Image
+from bs4 import BeautifulSoup
+import svgwrite
 
-def contour_to_bezier_v2(contours, epsilon_factor=0.001):
-    bezier_paths = []
+folder = "imag"
 
-    for contour in contours:
-        contour = contour.reshape(-1, 2)
+#########################
+# Convert pillow, potrace, inkscape
+#########################
 
-        # Giảm số lượng điểm bằng approxPolyDP (độ chính xác dựa trên epsilon)
-        epsilon = epsilon_factor * cv2.arcLength(contour, True)
-        approx = cv2.approxPolyDP(contour, epsilon, True)
+def convert_bmp_to_eps(bmp_path, eps_path):
+    subprocess.run(["potrace", bmp_path, "-e", "-o", eps_path])
 
-        path = Path()
+def convert_bmp_to_svg(bmp_path, svg_path):
+    subprocess.run(["potrace", bmp_path, "-s", "-o", svg_path])
 
-        for i in range(len(approx)):
-            p0 = approx[i - 1][0] if i > 0 else approx[-1][0]
-            p1 = approx[i][0]
-            p2 = approx[(i + 1) % len(approx)][0]
-
-            # Xác định điểm điều khiển Bézier từ fitEllipse (nếu có đủ điểm)
-            if len(approx) >= 5:
-                (x, y), (MA, ma), angle = cv2.fitEllipse(contour)
-                control_point = (x, y)
-            else:
-                control_point = (p0 + p2) / 2
-
-            bezier_path = QuadraticBezier(complex(*p0), complex(*control_point), complex(*p1))
-            path.append(bezier_path)
-
-        bezier_paths.append(path)
-
-    return bezier_paths
-
-
-# Hàm chuyển các contour thành các đường Bézier bậc 2 (Quadratic Bézier)
-def contour_to_bezier(contours):
-    bezier_paths = []
-
-    for contour in contours:
-        contour = contour.reshape(-1, 2)  # Chuyển contour thành mảng 2D
-        path = Path()
-
-        # Tạo các điểm Bézier từ các điểm contour
-        for i in range(len(contour)):
-            p0 = contour[i - 1] if i > 0 else contour[-1]  # previous point
-            p1 = contour[i]  # current point
-            p2 = contour[(i + 1) % len(contour)]  # next point
-
-            # Tạo điểm điều khiển trung gian cho đường Bézier
-            control_point = (p0 + p2) / 2  # Điều chỉnh điều khiển điểm giữa
-
-            # Tạo một Quadratic Bézier từ ba điểm
-            bezier_path = QuadraticBezier(p0, control_point, p1)
-            path.append(bezier_path)
-
-        bezier_paths.append(path)
-
-    return bezier_paths
-
-# Hàm chuyển các đường Bézier thành file SVG
-def save_as_svg(bezier_paths, output_path):
-    min_x = min(segment.start.real for path in bezier_paths for segment in path)
-    min_y = min(segment.start.imag for path in bezier_paths for segment in path)
-    max_x = max(segment.end.real for path in bezier_paths for segment in path)
-    max_y = max(segment.end.imag for path in bezier_paths for segment in path)
-
-    width = max_x - min_x
-    height = max_y - min_y
-
-    svg_content = f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="{min_x} {min_y} {width} {height}">\n'
-
-    # Duyệt qua các đường Bézier và thêm vào SVG
-    for path in bezier_paths:
-        for segment in path:
-            d = f'M {segment.start.real} {segment.start.imag} Q {segment.control.real} {segment.control.imag} {segment.end.real} {segment.end.imag}'
-            svg_content += f'<path d="{d}" stroke="black" stroke-width="1" fill="none" />\n'
-
-    svg_content += '</svg>'
-
-    with open(output_path, 'w') as file:
-        file.write(svg_content)
-
-
-# Hàm sử dụng Inkscape để chuyển SVG thành EPS
 def convert_svg_to_eps(svg_path, eps_path):
-    # Đảm bảo rằng bạn có Inkscape được cài đặt và có đường dẫn chính xác tới tệp thực thi Inkscape
-    inkscape_path = r"C:\Program Files\Inkscape\bin\inkscape.exe"  # Cập nhật đường dẫn Inkscape nếu cần
-    subprocess.run([inkscape_path, svg_path, '--export-filename', eps_path])
+    subprocess.run(["inkscape", svg_path, "--export-filename", eps_path, "--export-ps-level=3"])
 
-# Hàm phát hiện các đối tượng từ ảnh và trả về các contour
-def detect_object(input_path):
-    img = Image.open(input_path).convert("RGBA")
-    img_np = np.array(img)
+def convert_png_to_bmp(png_path, bmp_path):
+    img = Image.open(png_path).convert("RGBA")
+    background = Image.new("RGBA", img.size, (255, 255, 255, 255))
+    img = Image.alpha_composite(background, img)
+    img = img.convert("RGB")
+    img.save(bmp_path, "BMP")
 
-    # Tạo ảnh nhị phân từ kênh alpha (định dạng không nền)
-    alpha_channel = img_np[:, :, 3]
-    _, binary = cv2.threshold(alpha_channel, 1, 255, cv2.THRESH_BINARY)
+def convert_png_to_svg(png_path, svg_path):
+    subprocess.run(['inkscape', png_path, '--export-filename', svg_path], check=True)
 
-    # Áp dụng Gaussian Blur để làm mượt viền
-    blurred = cv2.GaussianBlur(binary, (3, 3), 3)
+def convert_png_to_svg_vector(png_path, svg_path):
+    subprocess.run([
+        'inkscape', png_path,
+        '--export-filename', svg_path,
+        '--trace-bitmap',
+        '--export-plain-svg'
+    ], check=True)
 
-    # Tìm đường viền của đối tượng
-    contours, _ = cv2.findContours(blurred, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+def convert_png_to_svg_pixel(png_path, svg_path):
+    image = Image.open(png_path).convert("RGBA")
+    width, height = image.size
 
-    return contours
+    # Tạo tệp SVG
+    dwg = svgwrite.Drawing(svg_path, profile='tiny', size=(width, height))
 
-# Ví dụ sử dụng
-img_name = "outline"
-input_path = f"image/{img_name}.png"
-contours = detect_object(input_path)
+    # Vòng lặp qua từng pixel
+    for y in range(height):
+        for x in range(width):
+            r, g, b, a = image.getpixel((x, y))
+            if a > 0:  # Nếu pixel không trong suốt
+                fill_color = svgwrite.rgb(r, g, b)
+                dwg.add(dwg.rect(insert=(x, y), size=(1, 1), fill=fill_color))
+
+    # Lưu tệp SVG
+    dwg.save()
+
+#########################
+# End
+#########################
 
 
-# Chuyển các contour thành Bézier và lưu thành SVG
-bezier_paths = contour_to_bezier_v2(contours)
-svg_path = f"image/export/{img_name}.svg"
-save_as_svg(bezier_paths, svg_path)
 
-# Chuyển SVG thành EPS bằng Inkscape
-eps_path = f"image/export/{img_name}.eps"
-convert_svg_to_eps(svg_path, eps_path)
+#########################
+# Other function
+#########################
+def process_image(input_path):
+    img = cv2.imread(input_path, cv2.IMREAD_UNCHANGED)
+    if img is None:
+        raise FileNotFoundError(f"❌ Không tìm thấy file: {input_path}")
+
+    if img.shape[-1] == 4:
+        alpha = img[:, :, 3]
+        binary = np.where(alpha == 0, 0, 255).astype(np.uint8)
+    else:
+        binary = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        _, binary = cv2.threshold(binary, 1, 255, cv2.THRESH_BINARY)
+
+    return binary
+
+def get_skeleton(input_path):
+    binary = process_image(input_path)
+    binary[binary > 0] = 1  # Convert to binary 0-1
+    binary = cv2.medianBlur(binary, 3)
+    skeleton = skeletonize(binary)
+    skeleton = (skeleton * 255).astype(np.uint8)
+    return skeleton
+
+def clean_svg(svg_path):
+    with open(svg_path, "r", encoding="utf-8") as file:
+        svg_data = file.read()
+
+    soup = BeautifulSoup(svg_data, "xml")
+    for g in soup.find_all("g"):
+        g["fill"] = "none"
+        g["stroke"] = "black"
+        paths = g.find_all("path")
+        if paths:
+            paths[0].decompose()
+
+    with open(svg_path, "w", encoding="utf-8") as file:
+        file.write(str(soup))
+
+#########################
+# Main
+#########################
+def black(name_png):
+    input_path = f'{folder}/{name_png}.png'
+    temp_bmp = f'{folder}/temp/{name_png}.bmp'
+
+    convert_png_to_bmp(input_path, temp_bmp)
+    convert_bmp_to_svg(temp_bmp, f'{folder}/export/svg/{name_png}.svg')
+    convert_bmp_to_eps(temp_bmp, f'{folder}/export/{name_png}.eps')
+
+    os.remove(temp_bmp)
+
+    print(f'✅ Xuất file EPS thành công: {folder}/export/{name_png}.eps')
+
+def outline(name_png):
+    input_path = f'{folder}/{name_png}.png'
+    svg_path = f'{folder}/export/svg/{name_png}.svg'
+    temp_bmp = f'{folder}/temp/{name_png}.bmp'
+
+    skeleton = get_skeleton(input_path)
+    cv2.imwrite(temp_bmp, skeleton, [cv2.IMWRITE_PXM_BINARY, 1])
+    convert_bmp_to_svg(temp_bmp, svg_path)
+    clean_svg(svg_path)
+    convert_svg_to_eps(svg_path, f'{folder}/export/{name_png}.eps')
+
+    os.remove(temp_bmp)
+
+    print(f'✅ Xuất file EPS thành công: {folder}/export/{name_png}.eps')
+
+def color(name_png, black_name_svg):
+    input_path = f'{folder}/{name_png}.png'
+    svg_path = f'{folder}/export/svg/{name_png}.svg'
+    black_svg_path = f'{folder}/export/svg/{black_name_svg}.svg'
+    temp_bmp = f'{folder}/temp/{name_png}.bmp'
+
+
+    convert_png_to_svg_pixel(input_path, svg_path)
+    convert_svg_to_eps(svg_path, f'{folder}/export/{name_png}.eps')
+
+    # apply_mask_to_svg(svg_path, black_svg_path)
+
+    # Xóa tạm BMP
+    if os.path.exists(temp_bmp):
+        os.remove(temp_bmp)
+
+    print(f'✅ Xuất file SVG thành công: {svg_path}')
+
+#########################
+# End
+#########################
+
+# 🚀 Chạy chương trình
+
+black_name = "1black"
+black(black_name)
+
+outline_name = "1outline"
+outline(outline_name)
+
+color_name = "1origin"
+color(color_name, black_name)
