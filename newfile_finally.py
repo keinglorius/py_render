@@ -6,8 +6,8 @@ import subprocess
 import numpy as np
 from PIL import Image
 from lxml import etree
-from skimage.morphology import skeletonize
 from bs4 import BeautifulSoup
+from skimage.morphology import skeletonize
 
 
 folder = "im"
@@ -107,86 +107,6 @@ def clean_svg(svg_path):
     with open(svg_path, "w", encoding="utf-8") as file:
         file.write(str(soup))
 
-def apply_transformations(d, scale):
-    path_commands = re.findall(r'[MmLlHhVvCcSsQqTtAaZz]|-?\d*\.?\d+', d)
-    transformed_commands = []
-    i = 0
-
-    command_params = {
-        'M': 2, 'L': 2, 'T': 2,
-        'H': 1, 'V': 1,
-        'C': 6, 'S': 4, 'Q': 4,
-        'A': 7,  # A (rx ry x-axis-rotation large-arc-flag sweep-flag x y)
-    }
-
-    prev_command = None
-
-    while i < len(path_commands):
-        command = path_commands[i]
-        if command.isalpha():
-            transformed_commands.append(command)
-            prev_command = command
-            i += 1
-        else:
-            num_params = command_params.get(prev_command.upper(), 2)  # Default to (x, y)
-            values = [float(path_commands[i + j]) for j in range(num_params)]
-
-            if prev_command.upper() in {'M', 'L', 'T'}:
-                values[0] /= scale[0]
-                values[1] /= scale[1]
-            elif prev_command.upper() == 'H':
-                values[0] /= scale[0]
-            elif prev_command.upper() == 'V':
-                values[0] /= scale[1]
-            elif prev_command.upper() in {'C', 'S', 'Q'}:
-                for j in range(0, num_params, 2):
-                    values[j] /= scale[0]
-                    values[j + 1] /= scale[1]
-            elif prev_command.upper() == 'A':
-                values[0] /= scale[0]  # rx
-                values[1] /= scale[1]  # ry
-                values[5] /= scale[0]  # x
-                values[6] /= scale[1]  # y
-
-            transformed_commands.extend(f'{v:.6f}' for v in values)
-            i += num_params
-
-    return ' '.join(transformed_commands)
-
-def extract_scale_from_transform(transform):
-    match = re.search(r'scale\((-?\d*\.?\d+),\s*(-?\d*\.?\d+)\)', transform)
-    if match:
-        return float(match.group(1)), float(match.group(2))
-    return 1.0, 1.0
-
-
-
-
-
-
-def get_path_bbox(path_elem):
-    """ Tính toán bounding box của path từ dữ liệu `d` """
-    d_attr = path_elem.get("d", "")
-    if not d_attr:
-        return None
-
-    # Trích xuất tất cả các số (tọa độ) từ `d`
-    coords = list(map(float, re.findall(r"[-+]?\d*\.\d+|\d+", d_attr)))
-
-    if len(coords) < 2:
-        return None  # Không đủ dữ liệu để tính bbox
-
-    # Xác định min/max tọa độ
-    min_x, min_y = min(coords[::2]), min(coords[1::2])
-    max_x, max_y = max(coords[::2]), max(coords[1::2])
-
-    return {
-        "x": min_x,
-        "y": min_y,
-        "width": max_x - min_x,
-        "height": max_y - min_y
-    }
-
 def fit_path_to_viewbox(path_elem, view_box):
     parent_g = path_elem.getparent()
     while parent_g is not None and parent_g.tag != f"{{{SVG_NS}}}g":
@@ -200,10 +120,6 @@ def fit_path_to_viewbox(path_elem, view_box):
     new_transform = f"{existing_transform}"
 
     path_elem.set("transform", new_transform.strip())
-
-
-
-
 
 
 SVG_NS = "http://www.w3.org/2000/svg"
@@ -327,27 +243,6 @@ def color(name_png, black_name):
 
     print(f'✅ Xuất file SVG thành công: {svg_path}')
 
-def merge_eps_to_ai(output_ai, *eps_files):
-    """Merge multiple EPS files into a single AI file using Inkscape CLI."""
-    if len(eps_files) < 2:
-        raise ValueError("Cần ít nhất 2 file EPS để gộp.")
-
-    # Tạo file SVG trung gian để nhập các EPS
-    temp_svg = "merged_temp.svg"
-
-    # Lệnh import tất cả EPS vào SVG
-    cmd_import = ["inkscape", "--export-filename=" + temp_svg]
-    for eps in eps_files:
-        cmd_import.append("--import-file=" + eps)
-
-    # Thực thi lệnh import
-    subprocess.run(cmd_import, check=True)
-
-    # Xuất SVG thành AI
-    cmd_export = ["inkscape", temp_svg, "--export-filename=" + output_ai]
-    subprocess.run(cmd_export, check=True)
-
-    print(f"Đã gộp {len(eps_files)} file EPS thành {output_ai}")
 
 #########################
 # End
@@ -367,20 +262,3 @@ outline(outline_name)
 color_name = "originImg"
 color(color_name, black_name)
 
-
-# def merge_eps_to_ai(output_file, eps_files):
-#     dwg = svgwrite.Drawing(output_file, profile="tiny")
-
-#     for i, eps in enumerate(eps_files):
-#         layer = dwg.add(dwg.g(id=f"Layer_{i+1}"))
-#         layer.add(dwg.image(href=eps, insert=(0, 0), size=("100%", "100%")))
-
-#     dwg.save()
-
-# eps_files = [
-#     f'{folder}/export/{black_name}.eps',
-#     f'{folder}/export/{gray_name}.eps',
-#     f'{folder}/export/{outline_name}.eps',
-#     f'{folder}/export/{color_name}.eps'
-# ]
-# merge_eps_to_ai(f'{folder}/export/output.ai', eps_files)
